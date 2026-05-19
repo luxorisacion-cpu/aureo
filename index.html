@@ -1,22 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análisis de Tendencia EMAs Fib - BPS</title>
+    <style>
+        :root { 
+            --bg: #0f171e; 
+            --panel: #1b2838; 
+            --text: #c7d5e0; 
+            --green: #00e676; 
+            --red: #ff1744; 
+            --yellow: #ffc107; 
+            --blue: #448aff; 
+        }
+        body { 
+            font-family: 'Inter', -apple-system, sans-serif; 
+            background-color: var(--bg); 
+            color: var(--text); 
+            margin: 0; 
+            padding: 20px; 
+            font-size: 14px; 
+        }
+        .container { max-width: 960px; margin: auto; }
+        h1 { text-align: center; color: var(--blue); margin-bottom: 5px; }
+        .subtitle { text-align: center; color: #8899a6; margin-bottom: 25px; font-size: 13px; }
+        .controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+        select, button { padding: 10px 15px; border-radius: 6px; border: 1px solid #2a3f50; background: var(--panel); color: var(--text); font-size: 14px; cursor: pointer; transition: 0.2s; }
+        button { background: var(--blue); color: #fff; font-weight: 600; border: none; }
+        button:hover { background: #2962ff; }
+        button:disabled { background: #455a64; cursor: not-allowed; }
+        
+        .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }
+        .card { background: var(--panel); padding: 20px; border-radius: 8px; border: 1px solid #263238; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .card h3 { margin: 0 0 10px 0; color: #8899a6; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .card .value { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+        
+        .trend-alta { color: var(--green); }
+        .trend-baja { color: var(--red); }
+        .trend-lateral { color: var(--yellow); }
+        
+        .ema-table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; border: 1px solid #263238; }
+        .ema-table th, .ema-table td { padding: 12px 15px; text-align: right; border-bottom: 1px solid #263238; }
+        .ema-table th { background: #1a2533; color: #8899a6; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; text-align: right; }
+        .ema-table th:first-child, .ema-table td:first-child { text-align: left; }
+        .ema-table tr:hover { background: #243447; }
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        
+        #status { text-align: center; margin: 15px 0; font-weight: 600; min-height: 20px; }
+        .loading { color: var(--blue); }
+        .error { color: var(--red); font-size: 13px; line-height: 1.5; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Análisis de Tendencia BPS</h1>
+    <div class="subtitle">EMAs de Fibonacci (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144)</div>
+    
+    <div class="controls">
+        <select id="symbol">
+            <option value="BTCUSDT">BTC/USDT</option>
+            <option value="ETHUSDT">ETH/USDT</option>
+            <option value="SOLUSDT">SOL/USDT</option>
+            <option value="BNBUSDT">BNB/USDT</option>
+        </select>
+        <select id="timeframe">
+            <option value="1m">1 Min</option>
+            <option value="5m">5 Min</option>
+            <option value="15m">15 Min</option>
+            <option value="1h" selected>1 Hora</option>
+            <option value="4h">4 Horas</option>
+            <option value="1d">1 Día</option>
+        </select>
+        <button id="btn-analyze" onclick="fetchBinanceData()">Analizar Mercado</button>
+    </div>
+
+    <div id="status">Listo para analizar.</div>
+
+    <div class="dashboard">
+        <div class="card">
+            <h3>Precio Actual</h3>
+            <div class="value" id="price">--</div>
+        </div>
+        <div class="card">
+            <h3>Estado de Tendencia</h3>
+            <div class="value" id="trend-state">--</div>
+        </div>
+        <div class="card">
+            <h3>Fuerza (BPS Promedio)</h3>
+            <div class="value" id="strength">--</div>
+        </div>
+        <div class="card">
+            <h3>Señales / Rupturas</h3>
+            <div class="value" id="breakouts" style="font-size: 14px;">--</div>
+        </div>
+    </div>
+
+    <table class="ema-table">
+        <thead>
+            <tr>
+                <th>Periodo EMA</th>
+                <th>Valor</th>
+                <th>Distancia vs Anterior (BPS)</th>
+                <th>Posición vs EMA 21</th>
+            </tr>
+        </thead>
+        <tbody id="ema-body"></tbody>
+    </table>
+</div>
+
 <script>
     const EMA_PERIODS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
     const BINANCE_API = "https://api.binance.com/api/v3/klines";
     
-    // --- MOTOR MATEMÁTICO OPTIMIZADO (O(N) en lugar de O(N^2)) ---
     function calculateSingleEMA(closes, period) {
         if (closes.length === 0) return 0;
         if (closes.length < period) return closes[closes.length - 1];
 
         const k = 2 / (period + 1);
-        
-        // 1. Inicializar la primera EMA con el promedio simple de los primeros 'period' elementos
         let sum = 0;
         for (let i = 0; i < period; i++) {
             sum += closes[i];
         }
         let ema = sum / period;
         
-        // 2. Calcular de forma iterativa el resto de la serie
         for (let i = period; i < closes.length; i++) {
             ema = (closes[i] * k) + (ema * (1 - k));
         }
@@ -31,11 +140,8 @@
         return emas;
     }
 
-    // --- ANALIZADOR ---
     function analyzeData(closes) {
         const currentPrice = closes[closes.length - 1];
-        
-        // Calculamos las EMAs actuales y previas eficientemente
         const currentEmas = calculateAllEMAs(closes);
         const prevEmas = calculateAllEMAs(closes.slice(0, -1));
 
@@ -132,7 +238,6 @@
         });
     }
 
-    // --- CONEXIÓN A BINANCE ---
     async function fetchBinanceData() {
         const btn = document.getElementById('btn-analyze');
         const statusEl = document.getElementById('status');
@@ -144,7 +249,6 @@
         statusEl.innerText = `Conectando a Binance (${symbol} / ${timeframe})...`;
 
         const url = `${BINANCE_API}?symbol=${symbol}&interval=${timeframe}&limit=500`;
-        
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 8000);
 
@@ -152,22 +256,16 @@
             const response = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
             
-            if (!response.ok) {
-                throw new Error(`Error del servidor: ${response.status}`);
-            }
+            if (!response.ok) throw new Error(`Error del servidor: ${response.status}`);
             
             const data = await response.json();
-            
-            if (data.code) {
-                throw new Error(data.msg || "Error en los datos de Binance");
-            }
+            if (data.code) throw new Error(data.msg || "Error en Binance");
 
             const closes = data.map(candle => parseFloat(candle[4]));
             
             statusEl.innerText = "Procesando tendencias...";
             statusEl.className = "loading";
             
-            // Forzar actualización del DOM antes del cálculo aritmético
             requestAnimationFrame(() => {
                 setTimeout(() => {
                     analyzeData(closes);
@@ -183,12 +281,14 @@
             statusEl.className = "error";
             
             if (error.name === 'AbortError') {
-                statusEl.innerHTML = "⚠️ Tiempo de espera agotado. Tu conexión a internet puede ser lenta o Binance está bloqueada en tu red.";
+                statusEl.innerHTML = "⚠️ Tiempo de espera agotado.";
             } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-                statusEl.innerHTML = "🚫 <b>Error de Red (CORS/Bloqueo)</b>.<br>Estás abriendo el HTML directamente desde tu disco duro (file://). Los navegadores bloquean esto por seguridad.<br><br><b>Solución:</b> Usa una extensión como 'Live Server' en VS Code, o sube este archivo a un hosting gratuito (Neocities, GitHub Pages) para que funcione con https://";
+                statusEl.innerHTML = "🚫 Error de Red (CORS).";
             } else {
                 statusEl.innerHTML = `⚠️ Ocurrió un error: ${error.message}`;
             }
         }
     }
 </script>
+</body>
+</html>
