@@ -1,0 +1,194 @@
+<script>
+    const EMA_PERIODS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
+    const BINANCE_API = "https://api.binance.com/api/v3/klines";
+    
+    // --- MOTOR MATEMÁTICO OPTIMIZADO (O(N) en lugar de O(N^2)) ---
+    function calculateSingleEMA(closes, period) {
+        if (closes.length === 0) return 0;
+        if (closes.length < period) return closes[closes.length - 1];
+
+        const k = 2 / (period + 1);
+        
+        // 1. Inicializar la primera EMA con el promedio simple de los primeros 'period' elementos
+        let sum = 0;
+        for (let i = 0; i < period; i++) {
+            sum += closes[i];
+        }
+        let ema = sum / period;
+        
+        // 2. Calcular de forma iterativa el resto de la serie
+        for (let i = period; i < closes.length; i++) {
+            ema = (closes[i] * k) + (ema * (1 - k));
+        }
+        return ema;
+    }
+
+    function calculateAllEMAs(closes) {
+        const emas = {};
+        EMA_PERIODS.forEach(period => {
+            emas[period] = calculateSingleEMA(closes, period);
+        });
+        return emas;
+    }
+
+    // --- ANALIZADOR ---
+    function analyzeData(closes) {
+        const currentPrice = closes[closes.length - 1];
+        
+        // Calculamos las EMAs actuales y previas eficientemente
+        const currentEmas = calculateAllEMAs(closes);
+        const prevEmas = calculateAllEMAs(closes.slice(0, -1));
+
+        document.getElementById('price').innerText = "$" + currentPrice.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+        let totalBps = 0;
+        let alignmentScore = 0;
+        let isPerfectAlta = true;
+        let isPerfectBaja = true;
+        let bpsDetails = [];
+
+        for (let i = 0; i < EMA_PERIODS.length - 1; i++) {
+            const p1 = EMA_PERIODS[i];
+            const p2 = EMA_PERIODS[i + 1];
+            const ema1 = currentEmas[p1];
+            const ema2 = currentEmas[p2];
+
+            const bps = ((ema1 - ema2) / ema2) * 10000;
+            totalBps += Math.abs(bps);
+            alignmentScore += bps;
+
+            if (ema1 < ema2) isPerfectAlta = false;
+            if (ema1 > ema2) isPerfectBaja = false;
+
+            bpsDetails.push({ period: p2, value: ema2, bps: bps });
+        }
+        bpsDetails.unshift({ period: EMA_PERIODS[0], value: currentEmas[EMA_PERIODS[0]], bps: 0 });
+
+        const avgBps = totalBps / (EMA_PERIODS.length - 1);
+        let trendState = "";
+        let trendClass = "";
+
+        if (avgBps < 15) {
+            trendState = "LATERALIZACIÓN";
+            trendClass = "trend-lateral";
+        } else if (isPerfectAlta) {
+            trendState = "FUERTE ALZA";
+            trendClass = "trend-alta";
+        } else if (isPerfectBaja) {
+            trendState = "FUERTE BAJA";
+            trendClass = "trend-baja";
+        } else if (alignmentScore > 0) {
+            trendState = "ALZA (Desordenada)";
+            trendClass = "trend-alta";
+        } else {
+            trendState = "BAJA (Desordenada)";
+            trendClass = "trend-baja";
+        }
+
+        document.getElementById('trend-state').innerText = trendState;
+        document.getElementById('trend-state').className = `value ${trendClass}`;
+        
+        document.getElementById('strength').innerText = avgBps.toFixed(2) + " bps";
+        document.getElementById('strength').className = `value ${avgBps > 15 ? (alignmentScore > 0 ? 'trend-alta' : 'trend-baja') : 'trend-lateral'}`;
+
+        let breakouts = [];
+        for(let i = 0; i < 3; i++) {
+            for(let j = EMA_PERIODS.length - 2; j < EMA_PERIODS.length; j++) {
+                const fastP = EMA_PERIODS[i];
+                const slowP = EMA_PERIODS[j];
+                
+                const prevDiff = prevEmas[fastP] - prevEmas[slowP];
+                const currDiff = currentEmas[fastP] - currentEmas[slowP];
+
+                if (prevDiff < 0 && currDiff > 0) breakouts.push(`Cruce Alcista EMA${fastP}/EMA${slowP}`);
+                if (prevDiff > 0 && currDiff < 0) breakouts.push(`Cruce Bajista EMA${fastP}/EMA${slowP}`);
+            }
+        }
+        
+        const breakoutEl = document.getElementById('breakouts');
+        if (breakouts.length > 0) {
+            breakoutEl.innerText = breakouts.join(" | ");
+            breakoutEl.className = `value ${breakouts[0].includes("Alcista") ? 'trend-alta' : 'trend-baja'}`;
+        } else {
+            breakoutEl.innerText = "Sin rupturas recientes";
+            breakoutEl.className = "value";
+        }
+
+        const tbody = document.getElementById('ema-body');
+        tbody.innerHTML = "";
+        bpsDetails.forEach((detail, index) => {
+            const tr = document.createElement('tr');
+            const bpsClass = detail.bps > 0 ? 'positive' : (detail.bps < 0 ? 'negative' : '');
+            const bpsText = index === 0 ? "--" : (detail.bps > 0 ? "+" : "") + detail.bps.toFixed(2);
+            let posText = index === 0 ? "--" : (detail.value > currentEmas[21] ? "Por encima" : "Por debajo");
+
+            tr.innerHTML = `
+                <td><strong>EMA ${detail.period}</strong></td>
+                <td>${detail.value.toFixed(2)}</td>
+                <td class="${bpsClass}">${bpsText}</td>
+                <td style="font-size: 12px; color: #aaa;">${posText}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    // --- CONEXIÓN A BINANCE ---
+    async function fetchBinanceData() {
+        const btn = document.getElementById('btn-analyze');
+        const statusEl = document.getElementById('status');
+        const symbol = document.getElementById('symbol').value;
+        const timeframe = document.getElementById('timeframe').value;
+        
+        btn.disabled = true;
+        statusEl.className = "loading";
+        statusEl.innerText = `Conectando a Binance (${symbol} / ${timeframe})...`;
+
+        const url = `${BINANCE_API}?symbol=${symbol}&interval=${timeframe}&limit=500`;
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        try {
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                throw new Error(`Error del servidor: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.code) {
+                throw new Error(data.msg || "Error en los datos de Binance");
+            }
+
+            const closes = data.map(candle => parseFloat(candle[4]));
+            
+            statusEl.innerText = "Procesando tendencias...";
+            statusEl.className = "loading";
+            
+            // Forzar actualización del DOM antes del cálculo aritmético
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    analyzeData(closes);
+                    statusEl.innerText = "Análisis completado con éxito.";
+                    statusEl.className = "";
+                    btn.disabled = false;
+                }, 16);
+            });
+
+        } catch (error) {
+            clearTimeout(timeoutId);
+            btn.disabled = false;
+            statusEl.className = "error";
+            
+            if (error.name === 'AbortError') {
+                statusEl.innerHTML = "⚠️ Tiempo de espera agotado. Tu conexión a internet puede ser lenta o Binance está bloqueada en tu red.";
+            } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                statusEl.innerHTML = "🚫 <b>Error de Red (CORS/Bloqueo)</b>.<br>Estás abriendo el HTML directamente desde tu disco duro (file://). Los navegadores bloquean esto por seguridad.<br><br><b>Solución:</b> Usa una extensión como 'Live Server' en VS Code, o sube este archivo a un hosting gratuito (Neocities, GitHub Pages) para que funcione con https://";
+            } else {
+                statusEl.innerHTML = `⚠️ Ocurrió un error: ${error.message}`;
+            }
+        }
+    }
+</script>
